@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>3D Kognitif VR Uçuş Egzersizi</title>
+    <title>3D Kognitif VR Uçuş Egzersizi - Aşama 1</title>
     <style>
         body, html {
             margin: 0;
@@ -14,6 +14,8 @@
             background-color: #a0c4ff;
             font-family: sans-serif;
             user-select: none;
+            /* 1. AŞAMA GÜNCELLEMESİ: Tarayıcının kaydırma/yakınlaştırma gecikmelerini sıfırlar */
+            touch-action: none; 
         }
 
         #start-screen {
@@ -44,9 +46,7 @@
             transition: transform 0.2s;
         }
 
-        .btn:active {
-            transform: scale(0.95);
-        }
+        .btn:active { transform: scale(0.95); }
 
         .ui-container {
             position: absolute;
@@ -67,7 +67,6 @@
 
         #ui-left { left: 0; }
         #ui-right { right: 0; }
-
         #vr-divider {
             position: absolute;
             left: 50%;
@@ -77,12 +76,7 @@
             background: rgba(255, 255, 255, 0.15);
             z-index: 5;
         }
-
-        #canvas3d {
-            width: 100%;
-            height: 100%;
-            display: block;
-        }
+        #canvas3d { width: 100%; height: 100%; display: block; }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
@@ -91,7 +85,7 @@
     <div id="start-screen">
         <h2>Kognitif Odaklanma Egzersizi</h2>
         <p style="max-width: 400px; margin-bottom: 30px; line-height: 1.5;">
-            Lütfen telefonu yatay konuma getirin. Başlamadan önce ekrana dokunup tam ekrana geçiş yapın ve ardından cihazı VR Box gözlüğünüze yerleştirin.
+            Lütfen telefonu yatay konuma getirin ve "Egzersizi Başlat" butonuna basın.
         </p>
         <button class="btn" id="start-btn">Egzersizi Başlat</button>
     </div>
@@ -109,7 +103,6 @@
     <canvas id="canvas3d"></canvas>
 
     <script>
-        // --- OYUN AYARLARI VE DEĞİŞKENLER ---
         const GAME_DURATION = 120; 
         const LOCK_ON_TIME = 5000; 
         const FLIGHT_SPEED = 15;   
@@ -118,30 +111,19 @@
         let timeLeft = GAME_DURATION;
         let gameActive = false;
         let wakeLock = null;
-        
-        // Pürüzsüz akış ve simüle edilmiş zaman takibi değişkenleri
         let clock = new THREE.Clock(); 
         let simulatedTime = 0; 
 
         let isTargetInside = false;
         let lockOnStartTime = null;
 
-        // Jiroskop Ham ve Filtrelenmiş Verileri
-        let rawPitch = 0;
-        let rawRoll = 0;
-        let filteredPitch = 0;
-        let filteredRoll = 0;
-        let basePitch = null;
-        let baseRoll = null;
-        
-        // Low-pass filtre katsayısı (0.15 = %15 yeni veri, %85 eski veri koruması ile yüksek pürüzsüzlük)
-        const GYRO_FILTER_FACTOR = 0.15; 
+        // Jiroskop Verileri
+        let rawPitch = 0, rawRoll = 0;
+        let basePitch = null, baseRoll = null;
 
-        // Yedek Kontrol Verileri
-        let touchStartX = 0;
-        let touchStartY = 0;
-        let touchPitch = 0;
-        let touchRoll = 0;
+        // Yedek Dokunmatik Verileri
+        let touchStartX = 0, touchStartY = 0;
+        let touchPitch = 0, touchRoll = 0;
         let isUsingTouch = true; 
 
         let currentRotation = new THREE.Euler(0, 0, 0, 'YXZ');
@@ -153,14 +135,10 @@
 
         const canvas = document.getElementById('canvas3d');
 
-        // --- BUTON VE SENSÖR BAĞLANTILARI ---
         document.getElementById('start-btn').addEventListener('click', function() {
             try {
-                if (document.documentElement.requestFullscreen) {
-                    document.documentElement.requestFullscreen();
-                } else if (document.documentElement.webkitRequestFullscreen) {
-                    document.documentElement.webkitRequestFullscreen();
-                }
+                if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+                else if (document.documentElement.webkitRequestFullscreen) document.documentElement.webkitRequestFullscreen();
             } catch (e) {}
 
             if ('wakeLock' in navigator) {
@@ -175,8 +153,7 @@
                         if (permissionState === 'granted') {
                             window.addEventListener('deviceorientation', handleOrientation, true);
                         }
-                    })
-                    .catch(err => {
+                    }).catch(() => {
                         window.addEventListener('deviceorientation', handleOrientation, true);
                     });
             } else {
@@ -186,7 +163,6 @@
             startGame();
         });
 
-        // --- SENSÖR VERİSİ ALMA VE FILTRE ÖNCESİ HAZIRLIK ---
         function handleOrientation(event) {
             if (event.beta === null || event.gamma === null) return;
             isUsingTouch = false;
@@ -212,39 +188,15 @@
                 touchStartX = e.touches[0].clientX;
                 touchStartY = e.touches[0].clientY;
             });
-
             window.addEventListener('touchmove', (e) => {
                 if (!isUsingTouch) return;
                 const deltaX = e.touches[0].clientX - touchStartX;
                 const deltaY = e.touches[0].clientY - touchStartY;
-
                 touchRoll -= (deltaX * 0.005);
                 touchPitch -= (deltaY * 0.005);
-
                 touchStartX = e.touches[0].clientX;
                 touchStartY = e.touches[0].clientY;
             });
-
-            let isDragging = false;
-            window.addEventListener('mousedown', (e) => {
-                isDragging = true;
-                touchStartX = e.clientX;
-                touchStartY = e.clientY;
-            });
-
-            window.addEventListener('mousemove', (e) => {
-                if (!isDragging || !isUsingTouch) return;
-                const deltaX = e.clientX - touchStartX;
-                const deltaY = e.clientY - touchStartY;
-
-                touchRoll -= (deltaX * 0.003);
-                touchPitch -= (deltaY * 0.003);
-
-                touchStartX = e.clientX;
-                touchStartY = e.clientY;
-            });
-
-            window.addEventListener('mouseup', () => { isDragging = false; });
         }
 
         function startGame() {
@@ -257,37 +209,18 @@
 
         function startTimer() {
             const timerInterval = setInterval(() => {
-                if (!gameActive) {
-                    clearInterval(timerInterval);
-                    return;
-                }
+                if (!gameActive) { clearInterval(timerInterval); return; }
                 timeLeft--;
                 document.querySelectorAll('.timer').forEach(el => el.innerText = `Süre: ${timeLeft}`);
-
-                if (timeLeft <= 0) {
-                    gameActive = false;
-                    clearInterval(timerInterval);
-                    endGame();
-                }
+                if (timeLeft <= 0) { gameActive = false; clearInterval(timerInterval); endGame(); }
             }, 1000);
         }
 
         function endGame() {
             const endDiv = document.createElement('div');
-            endDiv.style.position = 'absolute';
-            endDiv.style.width = '100%';
-            endDiv.style.height = '100%';
-            endDiv.style.background = '#1d2d44';
-            endDiv.style.color = 'white';
-            endDiv.style.display = 'flex';
-            endDiv.style.flexDirection = 'column';
-            endDiv.style.justifyContent = 'center';
-            endDiv.style.alignItems = 'center';
-            endDiv.style.zIndex = '200';
-            endDiv.style.fontSize = '32px';
+            endDiv.style = "position:absolute;width:100%;height:100%;background:#1d2d44;color:white;display:flex;flex-direction:column;justify-content:center;align-items:center;z-index:200;font-size:32px;";
             endDiv.innerHTML = `<h2>Egzersiz Tamamlandı</h2><p>Toplam Skor: ${score}</p>`;
             document.body.appendChild(endDiv);
-
             if (wakeLock) wakeLock.release();
         }
 
@@ -295,7 +228,13 @@
             const width = window.innerWidth;
             const height = window.innerHeight;
 
-            renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+            // 1. AŞAMA GÜNCELLEMESİ: Cihazın ekran kartını en yüksek performansa zorlama ayarları
+            renderer = new THREE.WebGLRenderer({ 
+                canvas: canvas, 
+                antialias: true,
+                powerPreference: "high-performance", 
+                precision: "mediump" 
+            });
             renderer.setSize(width, height);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
@@ -305,7 +244,6 @@
 
             cameraLeft = new THREE.PerspectiveCamera(60, (width / 2) / height, 0.1, 1000);
             cameraRight = new THREE.PerspectiveCamera(60, (width / 2) / height, 0.1, 1000);
-            
             cameraLeft.position.set(-0.3, 0, 0);
             cameraRight.position.set(0.3, 0, 0);
 
@@ -332,7 +270,6 @@
             hillsContainer = new THREE.Group();
             const hillGeo = new THREE.ConeGeometry(80, 40, 4);
             const hillMat = new THREE.MeshLambertMaterial({ color: 0xb7e4c7, flatShading: true });
-
             for(let i = 0; i < 40; i++) {
                 const mesh = new THREE.Mesh(hillGeo, hillMat);
                 const angle = Math.random() * Math.PI * 2;
@@ -365,11 +302,9 @@
                 const bodyMat = new THREE.MeshLambertMaterial({ color: 0xe63946 });
                 const body = new THREE.Mesh(bodyGeo, bodyMat);
                 targetAircraft.add(body);
-
                 const wingGeo = new THREE.BoxGeometry(4, 0.1, 0.8);
                 const wing = new THREE.Mesh(wingGeo, bodyMat);
                 targetAircraft.add(wing);
-
                 scene.add(targetAircraft);
             }
 
@@ -395,31 +330,12 @@
             if (!gameActive) return;
             requestAnimationFrame(animate);
 
-            // 1. ADIM: Donanımsal Ekran Hızından Soyutlama (Delta Zaman Sabitleme)
             const delta = Math.min(clock.getDelta(), 0.1);
-            // Sinüs dalgalarının anlık sıçramasını engellemek için zamanı sabit adımlarla biriktiriyoruz
             simulatedTime += delta; 
 
-            let targetPitch = 0;
-            let targetYaw = 0;
+            let targetPitch = isUsingTouch ? touchPitch : (rawPitch - (basePitch || 0)) * 0.6;
+            let targetYaw = isUsingTouch ? touchRoll : (rawRoll - (baseRoll || 0)) * 0.7;
 
-            if (isUsingTouch) {
-                targetPitch = touchPitch;
-                targetYaw = touchRoll;
-            } else {
-                // 2. ADIM: Low-Pass Filter (Alçak Geçiren Filtre) Entegrasyonu
-                // Gelen ham jiroskop verisindeki gürültüleri filtreleyerek sönümlüyoruz
-                let currentRawPitch = rawPitch - (basePitch || 0);
-                let currentRawRoll = rawRoll - (baseRoll || 0);
-
-                filteredPitch = filteredPitch + GYRO_FILTER_FACTOR * (currentRawPitch - filteredPitch);
-                filteredRoll = filteredRoll + GYRO_FILTER_FACTOR * (currentRawRoll - filteredRoll);
-
-                targetPitch = filteredPitch * 0.6; 
-                targetYaw = filteredRoll * 0.7;   
-            }
-
-            // Çift kademeli yumuşatma ile pürüzsüz rotasyon
             currentRotation.x += (targetPitch - currentRotation.x) * SMOOTHING_FACTOR;
             currentRotation.y += (targetYaw - currentRotation.y) * SMOOTHING_FACTOR;
             
@@ -432,8 +348,6 @@
             const targetForward = new THREE.Vector3(0, 0, -1);
             targetAircraft.position.addScaledVector(targetForward, (FLIGHT_SPEED * 0.88) * delta);
 
-            // 3. ADIM: Sıçramayan Matematiksel Pozisyon Güncellemesi
-            // performace.now() yerine tamamen pürüzsüz simüle zamanı (simulatedTime) kullanıyoruz
             targetAircraft.position.x += Math.cos(simulatedTime * ai.speed + ai.timeOffset) * ai.amplitudeX * delta;
             targetAircraft.position.y += Math.sin(simulatedTime * ai.speed * 0.8 + ai.timeOffset) * ai.amplitudeY * delta;
             
@@ -443,7 +357,6 @@
                 targetAircraft.position.z - 5
             );
 
-            // Derinlikten Bağımsız Hizalama Kontrolü
             const cameraDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(playerContainer.quaternion);
             const toTargetVector = new THREE.Vector3().subVectors(targetAircraft.position, playerContainer.position).normalize();
             const angleDifference = cameraDirection.angleTo(toTargetVector);
@@ -454,12 +367,9 @@
                     lockOnStartTime = performance.now();
                     targetAura.visible = true;
                 }
-
                 const elapsed = performance.now() - lockOnStartTime;
                 const progress = Math.min(elapsed / LOCK_ON_TIME, 1);
-
                 targetAura.material.color.setRGB(1 - progress * 0.72, 0.27 + progress * 0.5, 0.34 + progress * 0.08);
-                
                 targetAura.position.copy(targetAircraft.position);
                 targetAura.lookAt(playerContainer.position);
                 
@@ -467,18 +377,9 @@
                 const baseScale = (distanceToShip * 0.04) * (1.3 - (progress * 0.4));
                 targetAura.scale.set(baseScale, baseScale, baseScale);
 
-                if (progress >= 1) {
-                    score++;
-                    document.querySelectorAll('.score').forEach(el => el.innerText = `Skor: ${score}`);
-                    spawnTargetAircraft();
-                }
-            } else {
-                isTargetInside = false;
-                lockOnStartTime = null;
-                targetAura.visible = false;
-            }
+                if (progress >= 1) { score++; document.querySelectorAll('.score').forEach(el => el.innerText = `Skor: ${score}`); spawnTargetAircraft(); }
+            } else { isTargetInside = false; lockOnStartTime = null; targetAura.visible = false; }
 
-            // Stereoscopic VR Render
             renderer.setViewport(0, 0, window.innerWidth / 2, window.innerHeight);
             renderer.setScissor(0, 0, window.innerWidth / 2, window.innerHeight);
             renderer.setScissorTest(true);
@@ -491,13 +392,10 @@
         }
 
         function onWindowResize() {
-            const width = window.innerWidth;
-            const height = window.innerHeight;
+            const width = window.innerWidth; const height = window.innerHeight;
             renderer.setSize(width, height);
-            cameraLeft.aspect = (width / 2) / height;
-            cameraLeft.updateProjectionMatrix();
-            cameraRight.aspect = (width / 2) / height;
-            cameraRight.updateProjectionMatrix();
+            cameraLeft.aspect = (width / 2) / height; cameraLeft.updateProjectionMatrix();
+            cameraRight.aspect = (width / 2) / height; cameraRight.updateProjectionMatrix();
         }
     </script>
 </body>
