@@ -118,16 +118,24 @@
         let timeLeft = GAME_DURATION;
         let gameActive = false;
         let wakeLock = null;
-        let clock = new THREE.Clock(); // Kare hızından bağımsız akış için zamanlayıcı eklendi
+        
+        // Pürüzsüz akış ve simüle edilmiş zaman takibi değişkenleri
+        let clock = new THREE.Clock(); 
+        let simulatedTime = 0; 
 
         let isTargetInside = false;
         let lockOnStartTime = null;
 
-        // Jiroskop Verileri
-        let devicePitch = 0;
-        let deviceRoll = 0;
+        // Jiroskop Ham ve Filtrelenmiş Verileri
+        let rawPitch = 0;
+        let rawRoll = 0;
+        let filteredPitch = 0;
+        let filteredRoll = 0;
         let basePitch = null;
         let baseRoll = null;
+        
+        // Low-pass filtre katsayısı (0.15 = %15 yeni veri, %85 eski veri koruması ile yüksek pürüzsüzlük)
+        const GYRO_FILTER_FACTOR = 0.15; 
 
         // Yedek Kontrol Verileri
         let touchStartX = 0;
@@ -178,18 +186,14 @@
             startGame();
         });
 
-        // --- DOĞRULANMIŞ YENİ SENSÖR MATEMATİĞİ (KONTROL DOĞRULAMA) ---
+        // --- SENSÖR VERİSİ ALMA VE FILTRE ÖNCESİ HAZIRLIK ---
         function handleOrientation(event) {
             if (event.beta === null || event.gamma === null) return;
             isUsingTouch = false;
 
-            let rawPitch = 0;
-            let rawRoll = 0;
-
             const orientation = window.orientation || window.screen.orientation?.angle || 0;
 
             if (orientation === 90 || orientation === -90) {
-                // Baş hareketleriyle uçağın eşlenik yönlere gitmesi için çarpan işaretleri (+/-) revize edildi
                 rawPitch = (orientation === 90 ? event.gamma : -event.gamma) * (Math.PI / 180);
                 rawRoll = (orientation === 90 ? -event.beta : event.beta) * (Math.PI / 180);
             } else {
@@ -201,9 +205,6 @@
                 basePitch = rawPitch;
                 baseRoll = rawRoll;
             }
-
-            devicePitch = rawPitch - basePitch;
-            deviceRoll = rawRoll - baseRoll;
         }
 
         function setupTouchControls() {
@@ -217,7 +218,6 @@
                 const deltaX = e.touches[0].clientX - touchStartX;
                 const deltaY = e.touches[0].clientY - touchStartY;
 
-                // Dokunmatik yedek plandaki yön zıtlıkları da senkronize edildi
                 touchRoll -= (deltaX * 0.005);
                 touchPitch -= (deltaY * 0.005);
 
@@ -250,7 +250,7 @@
         function startGame() {
             document.getElementById('start-screen').style.display = 'none';
             gameActive = true;
-            clock.start(); // Zaman akışını başlat
+            clock.start(); 
             initEngine();
             startTimer();
         }
@@ -379,7 +379,6 @@
                 playerContainer.position.z - 55
             );
 
-            // Genişletilmiş kognitif kaçış sınırları korundu
             targetAircraft.userData = {
                 timeOffset: Math.random() * 100,
                 amplitudeX: 5.8 + Math.random() * 3,  
@@ -396,9 +395,10 @@
             if (!gameActive) return;
             requestAnimationFrame(animate);
 
-            // Delta time (Kareler arası geçen süre) hesaplanarak atlamalar engellendi
-            const deltaTime = Math.min(clock.getDelta(), 0.1); 
-            const clockTime = performance.now() * 0.001;
+            // 1. ADIM: Donanımsal Ekran Hızından Soyutlama (Delta Zaman Sabitleme)
+            const delta = Math.min(clock.getDelta(), 0.1);
+            // Sinüs dalgalarının anlık sıçramasını engellemek için zamanı sabit adımlarla biriktiriyoruz
+            simulatedTime += delta; 
 
             let targetPitch = 0;
             let targetYaw = 0;
@@ -407,29 +407,38 @@
                 targetPitch = touchPitch;
                 targetYaw = touchRoll;
             } else {
-                // Eksen katsayı yönleri revize edilerek eşlenik yön uyumu sağlandı
-                targetPitch = devicePitch * 0.6; 
-                targetYaw = deviceRoll * 0.7;   
+                // 2. ADIM: Low-Pass Filter (Alçak Geçiren Filtre) Entegrasyonu
+                // Gelen ham jiroskop verisindeki gürültüleri filtreleyerek sönümlüyoruz
+                let currentRawPitch = rawPitch - (basePitch || 0);
+                let currentRawRoll = rawRoll - (baseRoll || 0);
+
+                filteredPitch = filteredPitch + GYRO_FILTER_FACTOR * (currentRawPitch - filteredPitch);
+                filteredRoll = filteredRoll + GYRO_FILTER_FACTOR * (currentRawRoll - filteredRoll);
+
+                targetPitch = filteredPitch * 0.6; 
+                targetYaw = filteredRoll * 0.7;   
             }
 
+            // Çift kademeli yumuşatma ile pürüzsüz rotasyon
             currentRotation.x += (targetPitch - currentRotation.x) * SMOOTHING_FACTOR;
             currentRotation.y += (targetYaw - currentRotation.y) * SMOOTHING_FACTOR;
             
             playerContainer.quaternion.setFromEuler(currentRotation);
 
             const forwardDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(playerContainer.quaternion);
-            playerContainer.position.addScaledVector(forwardDirection, FLIGHT_SPEED * deltaTime);
+            playerContainer.position.addScaledVector(forwardDirection, FLIGHT_SPEED * delta);
 
             const ai = targetAircraft.userData;
             const targetForward = new THREE.Vector3(0, 0, -1);
-            targetAircraft.position.addScaledVector(targetForward, (FLIGHT_SPEED * 0.88) * deltaTime);
+            targetAircraft.position.addScaledVector(targetForward, (FLIGHT_SPEED * 0.88) * delta);
 
-            // Yapay zeka salınım hesaplaması pürüzsüzleştirildi (Atlamayı engellemek adına anlık ekleme yerine doğrudan delta eklendi)
-            targetAircraft.position.x += Math.cos(clockTime * ai.speed + ai.timeOffset) * ai.amplitudeX * deltaTime;
-            targetAircraft.position.y += Math.sin(clockTime * ai.speed * 0.8 + ai.timeOffset) * ai.amplitudeY * deltaTime;
+            // 3. ADIM: Sıçramayan Matematiksel Pozisyon Güncellemesi
+            // performace.now() yerine tamamen pürüzsüz simüle zamanı (simulatedTime) kullanıyoruz
+            targetAircraft.position.x += Math.cos(simulatedTime * ai.speed + ai.timeOffset) * ai.amplitudeX * delta;
+            targetAircraft.position.y += Math.sin(simulatedTime * ai.speed * 0.8 + ai.timeOffset) * ai.amplitudeY * delta;
             
             targetAircraft.lookAt(
-                targetAircraft.position.x + Math.sin(clockTime * ai.speed + ai.timeOffset),
+                targetAircraft.position.x + Math.sin(simulatedTime * ai.speed + ai.timeOffset),
                 targetAircraft.position.y,
                 targetAircraft.position.z - 5
             );
