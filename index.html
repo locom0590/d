@@ -144,42 +144,41 @@
 
         const canvas = document.getElementById('canvas3d');
 
-        // --- BAŞLANGIÇ TETİKLEYİCİSİ VE İZİNLER ---
+        // --- BAŞLANGIÇ TETİKLEYİCİSİ (GÜNCEL VE DAHA ESNEK VERSİYON) ---
         document.getElementById('start-btn').addEventListener('click', async () => {
             // 1. Tam Ekran Modunu Aktif Etme
-            if (document.documentElement.requestFullscreen) {
-                document.documentElement.requestFullscreen();
-            } else if (document.documentElement.webkitRequestFullscreen) {
-                document.documentElement.webkitRequestFullscreen();
-            }
-
-            // 2. Ekranın Kapanmasını Engelleme (Wake Lock API)
-            if ('wakeLock' in navigator) {
-                try {
-                    wakeLock = await navigator.wakeLock.request('screen');
-                } catch (err) {
-                    console.log("Wake lock aktif edilemedi: ", err);
+            try {
+                if (document.documentElement.requestFullscreen) {
+                    await document.documentElement.requestFullscreen();
+                } else if (document.documentElement.webkitRequestFullscreen) {
+                    await document.documentElement.webkitRequestFullscreen();
                 }
+            } catch (e) { console.log("Tam ekran başlatılamadı."); }
+
+            // 2. Ekranın Kapanmesini Engelleme
+            if ('wakeLock' in navigator) {
+                try { wakeLock = await navigator.wakeLock.request('screen'); } catch (err) {}
             }
 
-            // 3. iOS ve Android Sensör İzinleri Kontrolü
+            // 3. Sensör İzinleri ve Oyunu Her Koşulda Başlatma Güvencesi
             if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
                 try {
                     const permissionState = await DeviceOrientationEvent.requestPermission();
                     if (permissionState === 'granted') {
                         window.addEventListener('deviceorientation', handleOrientation);
-                        startGame();
                     } else {
-                        alert('Sensör izni reddedildi. Oyun baş hareketiyle kontrol edilemez.');
+                        alert('Sensör izni verilmedi, ancak oyun simülasyon modunda başlıyor.');
                     }
                 } catch (error) {
-                    console.error(error);
+                    console.log("iOS izni atlandı veya hata oluştu.");
                 }
             } else {
-                // Standart Android cihazlar için doğrudan dinleyici ekleme
+                // Android veya Masaüstü için doğrudan dinleyici ekle
                 window.addEventListener('deviceorientation', handleOrientation);
-                startGame();
             }
+
+            // Ne olursa olsun oyunu başlat (Donmayı engellemek için)
+            startGame();
         });
 
         function handleOrientation(event) {
