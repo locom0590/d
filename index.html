@@ -118,6 +118,7 @@
         let timeLeft = GAME_DURATION;
         let gameActive = false;
         let wakeLock = null;
+        let clock = new THREE.Clock(); // Kare hızından bağımsız akış için zamanlayıcı eklendi
 
         let isTargetInside = false;
         let lockOnStartTime = null;
@@ -144,74 +145,58 @@
 
         const canvas = document.getElementById('canvas3d');
 
-        // --- KATI GÜVENLİK PROTOKOLLÜ SENSÖR TETİKLEYİCİSİ ---
+        // --- BUTON VE SENSÖR BAĞLANTILARI ---
         document.getElementById('start-btn').addEventListener('click', function() {
-            // Tam ekran istekleri
             try {
                 if (document.documentElement.requestFullscreen) {
                     document.documentElement.requestFullscreen();
                 } else if (document.documentElement.webkitRequestFullscreen) {
                     document.documentElement.webkitRequestFullscreen();
                 }
-            } catch (e) { console.log("Tam ekran bypass edildi."); }
+            } catch (e) {}
 
-            // Ekran kilidi koruması
             if ('wakeLock' in navigator) {
                 navigator.wakeLock.request('screen').then(lock => { wakeLock = lock; }).catch(()=>{});
             }
 
-            // Yedek dokunmatik sistemini ayağa kaldır
             setupTouchControls();
 
-            // RESMİ İZİN İSTEĞİ (Kullanıcı etkileşimi içinde senkron çağrı)
             if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
                 DeviceOrientationEvent.requestPermission()
                     .then(permissionState => {
                         if (permissionState === 'granted') {
                             window.addEventListener('deviceorientation', handleOrientation, true);
-                        } else {
-                            alert("Sensör izni reddedildi. Egzersiz dokunmatik modda devam edecek.");
                         }
                     })
                     .catch(err => {
-                        console.log("İzin istenirken hata oluştu: ", err);
-                        // Bazı tarayıcılar için global dinleyiciyi doğrudan bağlama denemesi
                         window.addEventListener('deviceorientation', handleOrientation, true);
                     });
             } else {
-                // Standart webview veya Android tarayıcı mekanizması
                 window.addEventListener('deviceorientation', handleOrientation, true);
             }
 
-            // Oyunu geciktirmeden başlat
             startGame();
         });
 
-        // --- GELİŞTİRİLMİŞ SAF JİROSKOP VERİ AYIKLAYICI ---
+        // --- DOĞRULANMIŞ YENİ SENSÖR MATEMATİĞİ (KONTROL DOĞRULAMA) ---
         function handleOrientation(event) {
-            // Eğer beta veya gamma tanımsızsa dokunmatik modda kalmaya devam et
             if (event.beta === null || event.gamma === null) return;
-            
-            // Sensörden ham sayısal veri akışı doğrulandığı an dokunmatik girdi modunu tamamen kapat
             isUsingTouch = false;
 
             let rawPitch = 0;
             let rawRoll = 0;
 
-            // Ekranın güncel dönme derecesini hesapla
             const orientation = window.orientation || window.screen.orientation?.angle || 0;
 
             if (orientation === 90 || orientation === -90) {
-                // Yatay modda eksenlerin çapraz eşlemesini yap (Tarayıcı standart senkronizasyonu)
-                rawPitch = (orientation === 90 ? -event.gamma : event.gamma) * (Math.PI / 180);
-                rawRoll = (orientation === 90 ? event.beta : -event.beta) * (Math.PI / 180);
+                // Baş hareketleriyle uçağın eşlenik yönlere gitmesi için çarpan işaretleri (+/-) revize edildi
+                rawPitch = (orientation === 90 ? event.gamma : -event.gamma) * (Math.PI / 180);
+                rawRoll = (orientation === 90 ? -event.beta : event.beta) * (Math.PI / 180);
             } else {
-                // Yedek dikey mod eşlemesi
-                rawPitch = event.beta * (Math.PI / 180);
+                rawPitch = -event.beta * (Math.PI / 180);
                 rawRoll = event.gamma * (Math.PI / 180);
             }
 
-            // Kalibrasyon sıfırlaması
             if (basePitch === null) {
                 basePitch = rawPitch;
                 baseRoll = rawRoll;
@@ -232,8 +217,9 @@
                 const deltaX = e.touches[0].clientX - touchStartX;
                 const deltaY = e.touches[0].clientY - touchStartY;
 
-                touchRoll += (deltaX * 0.005);
-                touchPitch += (deltaY * 0.005);
+                // Dokunmatik yedek plandaki yön zıtlıkları da senkronize edildi
+                touchRoll -= (deltaX * 0.005);
+                touchPitch -= (deltaY * 0.005);
 
                 touchStartX = e.touches[0].clientX;
                 touchStartY = e.touches[0].clientY;
@@ -251,8 +237,8 @@
                 const deltaX = e.clientX - touchStartX;
                 const deltaY = e.clientY - touchStartY;
 
-                touchRoll += (deltaX * 0.003);
-                touchPitch += (deltaY * 0.003);
+                touchRoll -= (deltaX * 0.003);
+                touchPitch -= (deltaY * 0.003);
 
                 touchStartX = e.clientX;
                 touchStartY = e.clientY;
@@ -264,6 +250,7 @@
         function startGame() {
             document.getElementById('start-screen').style.display = 'none';
             gameActive = true;
+            clock.start(); // Zaman akışını başlat
             initEngine();
             startTimer();
         }
@@ -358,7 +345,6 @@
         }
 
         function createReticle() {
-            // Nişangah halkası (1.5 kat büyük tasarım korundu)
             const ringGeo = new THREE.RingGeometry(1.2, 1.275, 32);
             const ringMat = new THREE.MeshBasicMaterial({ color: 0x1d2d44, side: THREE.DoubleSide });
             reticleRing = new THREE.Mesh(ringGeo, ringMat);
@@ -393,12 +379,11 @@
                 playerContainer.position.z - 55
             );
 
-            // --- YENİ KOGNİTİF KAÇIŞ GENİŞLİĞİ (KÖŞELERE DOĞRU KAÇIŞ) ---
-            // Genişlik genliklerini (amplitude) artırdık, uçak artık ekranın uç sınırlarına kaçabilecek.
+            // Genişletilmiş kognitif kaçış sınırları korundu
             targetAircraft.userData = {
                 timeOffset: Math.random() * 100,
-                amplitudeX: 5.8 + Math.random() * 3,  // Eski değer: 3.5. Artık sağa/sola çok daha geniş kaçıyor.
-                amplitudeY: 3.2 + Math.random() * 2,  // Eski değer: 1.8. Artık yukarı/aşağı çok daha geniş kaçıyor.
+                amplitudeX: 5.8 + Math.random() * 3,  
+                amplitudeY: 3.2 + Math.random() * 2,  
                 speed: 0.65 + Math.random() * 0.3
             };
 
@@ -411,17 +396,20 @@
             if (!gameActive) return;
             requestAnimationFrame(animate);
 
+            // Delta time (Kareler arası geçen süre) hesaplanarak atlamalar engellendi
+            const deltaTime = Math.min(clock.getDelta(), 0.1); 
             const clockTime = performance.now() * 0.001;
 
             let targetPitch = 0;
             let targetYaw = 0;
 
             if (isUsingTouch) {
-                targetPitch = -touchPitch;
-                targetYaw = -touchRoll;
+                targetPitch = touchPitch;
+                targetYaw = touchRoll;
             } else {
-                targetPitch = -devicePitch * 0.6; 
-                targetYaw = -deviceRoll * 0.7;   
+                // Eksen katsayı yönleri revize edilerek eşlenik yön uyumu sağlandı
+                targetPitch = devicePitch * 0.6; 
+                targetYaw = deviceRoll * 0.7;   
             }
 
             currentRotation.x += (targetPitch - currentRotation.x) * SMOOTHING_FACTOR;
@@ -430,14 +418,15 @@
             playerContainer.quaternion.setFromEuler(currentRotation);
 
             const forwardDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(playerContainer.quaternion);
-            playerContainer.position.addScaledVector(forwardDirection, FLIGHT_SPEED * 0.016);
+            playerContainer.position.addScaledVector(forwardDirection, FLIGHT_SPEED * deltaTime);
 
             const ai = targetAircraft.userData;
             const targetForward = new THREE.Vector3(0, 0, -1);
-            targetAircraft.position.addScaledVector(targetForward, (FLIGHT_SPEED * 0.88) * 0.016);
+            targetAircraft.position.addScaledVector(targetForward, (FLIGHT_SPEED * 0.88) * deltaTime);
 
-            targetAircraft.position.x += Math.sin(clockTime * ai.speed + ai.timeOffset) * ai.amplitudeX * 0.016;
-            targetAircraft.position.y += Math.cos(clockTime * ai.speed * 0.8 + ai.timeOffset) * ai.amplitudeY * 0.016;
+            // Yapay zeka salınım hesaplaması pürüzsüzleştirildi (Atlamayı engellemek adına anlık ekleme yerine doğrudan delta eklendi)
+            targetAircraft.position.x += Math.cos(clockTime * ai.speed + ai.timeOffset) * ai.amplitudeX * deltaTime;
+            targetAircraft.position.y += Math.sin(clockTime * ai.speed * 0.8 + ai.timeOffset) * ai.amplitudeY * deltaTime;
             
             targetAircraft.lookAt(
                 targetAircraft.position.x + Math.sin(clockTime * ai.speed + ai.timeOffset),
@@ -445,12 +434,11 @@
                 targetAircraft.position.z - 5
             );
 
-            // --- DERİNLİKTEN BAĞIMSIZ DOĞRULANMIŞ HİZALAMA ---
+            // Derinlikten Bağımsız Hizalama Kontrolü
             const cameraDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(playerContainer.quaternion);
             const toTargetVector = new THREE.Vector3().subVectors(targetAircraft.position, playerContainer.position).normalize();
             const angleDifference = cameraDirection.angleTo(toTargetVector);
 
-            // Uçak köşelere kaçtığı için kilitlenme tolerans açısını (0.12 -> 0.14) olarak esnettik.
             if (angleDifference < 0.14) { 
                 if (!isTargetInside) {
                     isTargetInside = true;
