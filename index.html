@@ -114,9 +114,9 @@
 
     <script>
         // --- OYUN AYARLARI VE DEĞİŞKENLER ---
-        const GAME_DURATION = 120; // 2 dakika (Saniye cinsinden)
-        const LOCK_ON_TIME = 5000; // 5 saniye kilitlenme süresi (milisaniye)
-        const FLIGHT_SPEED = 15;   // Sabit uçuş hızı (Kognitif kitle için yavaş süzülme)
+        const GAME_DURATION = 120; // 2 dakika
+        const LOCK_ON_TIME = 5000; // 5 saniye kilitlenme süresi
+        const FLIGHT_SPEED = 15;   // Sabit uçuş hızı
         
         let score = 0;
         let timeLeft = GAME_DURATION;
@@ -133,9 +133,16 @@
         let basePitch = null;
         let baseRoll = null;
 
-        // Yumuşatma (Damping) Katsayıları - Keskin hareketleri filtreler
+        // Dokunmatik / Fare ile Kontrol Yedek Planı Değişkenleri
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let touchPitch = 0;
+        let touchRoll = 0;
+        let isUsingTouch = false;
+
+        // Yumuşatma (Damping) Katsayıları
         let currentRotation = new THREE.Euler(0, 0, 0, 'YXZ');
-        const SMOOTHING_FACTOR = 0.03; // Ne kadar küçükse hareket o kadar sönümlü/yumuşak olur
+        const SMOOTHING_FACTOR = 0.04; // Kontrollerin tepki hızını hafifçe artırdık (0.03 -> 0.04)
 
         // Three.js Çekirdek Elemanları
         let renderer, scene, cameraLeft, cameraRight;
@@ -167,27 +174,44 @@
                     if (permissionState === 'granted') {
                         window.addEventListener('deviceorientation', handleOrientation);
                     } else {
-                        alert('Sensör izni verilmedi, ancak oyun simülasyon modunda başlıyor.');
+                        console.log('Sensör izni verilmedi, dokunmatik/fare yedek moduna geçiliyor.');
+                        setupTouchControls();
                     }
                 } catch (error) {
-                    console.log("iOS izni atlandı veya hata oluştu.");
+                    console.log("iOS sensör hatası, dokunmatik aktif ediliyor.");
+                    setupTouchControls();
                 }
             } else {
-                // Android veya Masaüstü için doğrudan dinleyici ekle
+                // Standart Android veya Masaüstü Tarayıcılar
                 window.addEventListener('deviceorientation', handleOrientation);
+                // Aynı zamanda dokunmatik yedek planını da arkada hazır tut
+                setupTouchControls();
             }
 
             // Ne olursa olsun oyunu başlat (Donmayı engellemek için)
             startGame();
         });
 
+        // --- GELİŞTİRİLMİŞ JİROSKOP EKSEN YÖNETİMİ ---
         function handleOrientation(event) {
-            if (!event.alpha) return;
+            // Sensör verisi gelmiyorsa dokunmatik kontrolü devreye sokabilmek için kontrol
+            if (event.beta === null || event.gamma === null) return;
+            
+            let rawPitch = 0;
+            let rawRoll = 0;
 
-            // Yatay modda (Landscape) telefon kontrol eksenleri yer değiştirir
-            // Beta: Pitch (Aşağı/Yukarı), Gamma: Roll (Sağ/Sol yatış)
-            let rawPitch = event.beta * (Math.PI / 180);
-            let rawRoll = event.gamma * (Math.PI / 180);
+            // Telefonun yatay duruş yönüne göre (Giriş açısı kontrolü) doğru eksenleri eşleme
+            if (window.orientation === 90) {
+                rawPitch = -event.gamma * (Math.PI / 180);
+                rawRoll = event.beta * (Math.PI / 180);
+            } else if (window.orientation === -90) {
+                rawPitch = event.gamma * (Math.PI / 180);
+                rawRoll = -event.beta * (Math.PI / 180);
+            } else {
+                // Standart dikey veya algılanamayan mod yedek eşlemesi
+                rawPitch = event.beta * (Math.PI / 180);
+                rawRoll = event.gamma * (Math.PI / 180);
+            }
 
             // İlk açıyı referans (kalibrasyon) olarak kaydet
             if (basePitch === null) {
@@ -195,9 +219,58 @@
                 baseRoll = rawRoll;
             }
 
-            // Referans açılardan ne kadar saptığımızı hesapla
+            // Sapma miktarlarını hesapla
             devicePitch = rawPitch - basePitch;
             deviceRoll = rawRoll - baseRoll;
+            
+            // Sensör başarıyla çalışıyorsa dokunmatik girdileri ez
+            isUsingTouch = false;
+        }
+
+        // --- YEDEK PLAN: DOKUNMATİK VE FARE SÜRÜKLEME KONTROLLERİ ---
+        function setupTouchControls() {
+            // Mobil dokunma olayları
+            window.addEventListener('touchstart', (e) => {
+                isUsingTouch = true;
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
+            });
+
+            window.addEventListener('touchmove', (e) => {
+                if (!isUsingTouch) return;
+                const deltaX = e.touches[0].clientX - touchStartX;
+                const deltaY = e.touches[0].clientY - touchStartY;
+
+                // Hassasiyeti kognitif sınırlara göre normalize etme
+                touchRoll += (deltaX * 0.005);
+                touchPitch += (deltaY * 0.005);
+
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
+            });
+
+            // Masaüstü testleri için fare sürükleme olayları
+            let isDragging = false;
+            window.addEventListener('mousedown', (e) => {
+                isUsingTouch = true;
+                isDragging = true;
+                touchStartX = e.clientX;
+                touchStartY = e.clientY;
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                const deltaX = e.clientX - touchStartX;
+                const deltaY = e.clientY - touchStartY;
+
+                touchRoll += (deltaX * 0.003);
+                touchPitch += (deltaY * 0.003);
+
+                touchStartX = e.clientX;
+                touchStartY = e.clientY;
+            });
+
+            window.addEventListener('mouseup', () => { isDragging = false; });
         }
 
         function startGame() {
@@ -216,7 +289,6 @@
                 }
                 timeLeft--;
                 
-                // UI Güncelleme
                 document.querySelectorAll('.timer').forEach(el => el.innerText = `Süre: ${timeLeft}`);
 
                 if (timeLeft <= 0) {
@@ -228,7 +300,6 @@
         }
 
         function endGame() {
-            // Ekranı yumuşakça karartıp final skorunu gösterme
             const endDiv = document.createElement('div');
             endDiv.style.position = 'absolute';
             endDiv.style.width = '100%';
@@ -252,31 +323,25 @@
             const width = window.innerWidth;
             const height = window.innerHeight;
 
-            // Renderer kurulumu
             renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
             renderer.setSize(width, height);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-            // Sahne oluşturma ve sis (derinlik hissi ve soft geçiş için)
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0xa0c4ff);
             scene.fog = new THREE.FogExp2(0xa0c4ff, 0.005);
 
-            // VR Çift Kamera Kurulumu (Stereoscopic Split Screen)
-            // Sol ve Sağ göz kameraları aralarında hafif bir IPD (göz bebekleri arası mesafe) boşluğu ile konumlandırılır
             cameraLeft = new THREE.PerspectiveCamera(60, (width / 2) / height, 0.1, 1000);
             cameraRight = new THREE.PerspectiveCamera(60, (width / 2) / height, 0.1, 1000);
             
             cameraLeft.position.set(-0.3, 0, 0);
             cameraRight.position.set(0.3, 0, 0);
 
-            // Oyuncu Konteyneri (Kameralar ve Reticle bu kutunun içinde ilerler)
             playerContainer = new THREE.Group();
             playerContainer.add(cameraLeft);
             playerContainer.add(cameraRight);
             scene.add(playerContainer);
 
-            // Işıklandırma
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
             scene.add(ambientLight);
             const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
@@ -291,19 +356,15 @@
             animate();
         }
 
-        // --- ÇEVRESEL TASARIM (PASTEL TEPELER) ---
         function createEnvironment() {
             hillsContainer = new THREE.Group();
-            
-            // Kullanıcıyı yormayacak, çok uzaklarda soft geometrik tepeler
-            const hillGeo = new THREE.ConeGeometry(80, 40, 4); // Düşük poligonlu piramit/koni tepeler
+            const hillGeo = new THREE.ConeGeometry(80, 40, 4);
             const hillMat = new THREE.MeshLambertMaterial({ color: 0xb7e4c7, flatShading: true });
 
-            // Rastgele ama uzak konumlara tepeler serpiştirme (Ufuk çizgisi hissi için)
             for(let i = 0; i < 40; i++) {
                 const mesh = new THREE.Mesh(hillGeo, hillMat);
                 const angle = Math.random() * Math.PI * 2;
-                const radius = 300 + Math.random() * 200; // Oyuncudan uzakta konumlandırma
+                const radius = 300 + Math.random() * 200;
                 
                 mesh.position.set(Math.cos(angle) * radius, -30, Math.sin(angle) * radius);
                 mesh.rotation.y = Math.random() * Math.PI;
@@ -312,32 +373,26 @@
             scene.add(hillsContainer);
         }
 
-        // --- HEDEF HALKASI (RETICLE) VE HALE (AURA) ---
         function createReticle() {
-            // Oyuncunun 3D uzayda göz hizasının 15 birim önünde asılı duran halka
             const ringGeo = new THREE.RingGeometry(0.8, 0.85, 32);
             const ringMat = new THREE.MeshBasicMaterial({ color: 0x1d2d44, side: THREE.DoubleSide });
             reticleRing = new THREE.Mesh(ringGeo, ringMat);
             reticleRing.position.set(0, 0, -15); 
-            playerContainer.add(reticleRing); // Oyuncuyla beraber hareket eder
+            playerContainer.add(reticleRing);
 
-            // Düşmanın etrafında belirecek olan Kilitlenme Halesi (Aura)
             const auraGeo = new THREE.RingGeometry(1.2, 1.3, 32);
-            // Başlangıç rengi pasif kırmızı/turuncu tonlarındadır
             targetAura = new THREE.Mesh(auraGeo, new THREE.MeshBasicMaterial({ color: 0xff4757, side: THREE.DoubleSide }));
             targetAura.visible = false;
             scene.add(targetAura);
         }
 
-        // --- KAÇAN HEDEF UÇAK YAPAY ZEKASI ---
         function spawnTargetAircraft() {
             if (!targetAircraft) {
-                // Basit, temiz geometrik formlardan bir 3D kaçış uçağı (Glider konsepti)
                 targetAircraft = new THREE.Group();
 
                 const bodyGeo = new THREE.ConeGeometry(0.4, 3, 8);
                 bodyGeo.rotateX(Math.PI / 2);
-                const bodyMat = new THREE.MeshLambertMaterial({ color: 0xe63946 }); // Dikkat çekici kontrast kırmızı renk
+                const bodyMat = new THREE.MeshLambertMaterial({ color: 0xe63946 });
                 const body = new THREE.Mesh(bodyGeo, bodyMat);
                 targetAircraft.add(body);
 
@@ -348,19 +403,18 @@
                 scene.add(targetAircraft);
             }
 
-            // Yeni uçağı oyuncunun ilerlediği yönün hemen önünde yumuşak bir mesafede konumlandır
+            // Hedefi her zaman tam karşı aksın ortasında daha yakın başlatıyoruz (Takip kolaylığı için -45 yerine -35)
             targetAircraft.position.set(
-                playerContainer.position.x + (Math.random() - 0.5) * 5,
-                playerContainer.position.y + (Math.random() - 0.5) * 3,
-                playerContainer.position.z - 45
+                playerContainer.position.x + (Math.random() - 0.5) * 3,
+                playerContainer.position.y + (Math.random() - 0.5) * 2,
+                playerContainer.position.z - 35
             );
 
-            // Yapay zeka kaçış rotası için özel sinüs/cos dalga verileri (Yumuşak salınım)
             targetAircraft.userData = {
                 timeOffset: Math.random() * 100,
-                amplitudeX: 4 + Math.random() * 3,
-                amplitudeY: 2 + Math.random() * 2,
-                speed: 0.8 + Math.random() * 0.4
+                amplitudeX: 3 + Math.random() * 2, // Yapay zeka kaçış genişliklerini daralttık ki halkadan hemen kaçmasın
+                amplitudeY: 1.5 + Math.random() * 1.5,
+                speed: 0.6 + Math.random() * 0.3
             };
 
             targetAura.visible = false;
@@ -368,109 +422,99 @@
             lockOnStartTime = null;
         }
 
-        // --- ANA OYUN DÖNGÜSÜ (RENDER LOOP) ---
         function animate() {
             if (!gameActive) return;
             requestAnimationFrame(animate);
 
             const clockTime = performance.now() * 0.001;
 
-            // 1. Jiroskop Verilerini Yumuşatarak (Damping) Dönüşe Aktarma
-            // Ani sarsıntıları engelleyerek motion sickness riskini minimize eder
-            let targetPitch = -devicePitch * 0.5; 
-            let targetYaw = -deviceRoll * 0.6;   
+            let targetPitch = 0;
+            let targetYaw = 0;
 
+            // Jiroskop verisi varsa onu kullan, yoksa dokunmatik veriye geç
+            if (isUsingTouch) {
+                targetPitch = -touchPitch;
+                targetYaw = -touchRoll;
+            } else {
+                targetPitch = -devicePitch * 0.6; 
+                targetYaw = -deviceRoll * 0.7;   
+            }
+
+            // Sönümleme / Yumuşatma Hesabı
             currentRotation.x += (targetPitch - currentRotation.x) * SMOOTHING_FACTOR;
             currentRotation.y += (targetYaw - currentRotation.y) * SMOOTHING_FACTOR;
             
             playerContainer.quaternion.setFromEuler(currentRotation);
 
-            // 2. Sabit Hızda İleri Doğru Süzülme
+            // İleri İlerleme
             const forwardDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(playerContainer.quaternion);
             playerContainer.position.addScaledVector(forwardDirection, FLIGHT_SPEED * 0.016);
 
-            // 3. Kaçan Uçağın Yumuşak Yapay Zekası (Sinüs Eğrileri Modeli)
+            // Hedef Uçak Yapay Zekası
             const ai = targetAircraft.userData;
-            const targetForward = new THREE.Vector3(0, 0, -1); // Düşman da ileri akar
-            targetAircraft.position.addScaledVector(targetForward, (FLIGHT_SPEED * 0.9) * 0.016);
+            const targetForward = new THREE.Vector3(0, 0, -1);
+            targetAircraft.position.addScaledVector(targetForward, (FLIGHT_SPEED * 0.88) * 0.016);
 
-            // Sağa-sola ve yukarı-aşağı yapılan kavisli soft hareketler
             targetAircraft.position.x += Math.sin(clockTime * ai.speed + ai.timeOffset) * ai.amplitudeX * 0.016;
             targetAircraft.position.y += Math.cos(clockTime * ai.speed * 0.8 + ai.timeOffset) * ai.amplitudeY * 0.016;
             
-            // Hedef uçağın yüzünü kaçış yönüne doğru yumuşakça çevirme
             targetAircraft.lookAt(
                 targetAircraft.position.x + Math.sin(clockTime * ai.speed + ai.timeOffset),
                 targetAircraft.position.y,
                 targetAircraft.position.z - 5
             );
 
-            // 4. Kilitlenme (Lock-on) Mekaniği Algoritması
-            // Düşman uçağın ekranın (halkanın) merkezine olan izdüşüm mesafesini ölçme
+            // Kilitlenme Kontrolü
             const reticleWorldPos = new THREE.Vector3();
             reticleRing.getWorldPosition(reticleWorldPos);
-
             const distanceToTargetLine = reticleWorldPos.distanceTo(targetAircraft.position);
 
-            // Eğer hedef uçak 3D uzaydaki halkamızın etki alanına (tolerans sınırı) girdiyse
-            if (distanceToTargetLine < 4.5) { 
+            if (distanceToTargetLine < 5.0) { // Tolerans alanını kognitif odak kolaylığı için 4.5'ten 5.0'a çıkardık
                 if (!isTargetInside) {
                     isTargetInside = true;
                     lockOnStartTime = performance.now();
                     targetAura.visible = true;
                 }
 
-                // Kaç saniyedir halkanın içinde tutulduğunu hesaplama
                 const elapsed = performance.now() - lockOnStartTime;
                 const progress = Math.min(elapsed / LOCK_ON_TIME, 1);
 
-                // Geri Bildirim: Hale rengini kademeli olarak yeşile döndürme
-                // RGB Geçişi: Kırmızıdan (1, 0.27, 0.34) -> Yeşile (0.28, 0.7a, 0.42)
                 targetAura.material.color.setRGB(1 - progress * 0.72, 0.27 + progress * 0.5, 0.34 + progress * 0.08);
                 
-                // Haleyi düşman uçağın konumuna eşitleme ve uçağa doğru daraltma (görsel indikatör)
                 targetAura.position.copy(targetAircraft.position);
                 targetAura.lookAt(playerContainer.position);
                 const scaleFactor = 1.3 - (progress * 0.4);
                 targetAura.scale.set(scaleFactor, scaleFactor, scaleFactor);
 
-                // 5 Saniye Kesintisiz Odaklanma Başarıldıysa
                 if (progress >= 1) {
                     score++;
                     document.querySelectorAll('.score').forEach(el => el.innerText = `Skor: ${score}`);
-                    spawnTargetAircraft(); // Mevcut uçağı patlat ve yeni hedefe geç
+                    spawnTargetAircraft();
                 }
             } else {
-                // Hedef halkadan çıktıysa takip durumunu sıfırla
                 isTargetInside = false;
                 lockOnStartTime = null;
                 targetAura.visible = false;
             }
 
-            // 5. ÇİFT KAMERA VR RENDER (Stereoscopic Rendering)
-            // Ekran sol yarıya bölünür, sol kamera çizilir
+            // Stereoscopic VR Render
             renderer.setViewport(0, 0, window.innerWidth / 2, window.innerHeight);
             renderer.setScissor(0, 0, window.innerWidth / 2, window.innerHeight);
             renderer.setScissorTest(true);
             renderer.render(scene, cameraLeft);
 
-            // Ekran sağ yarıya bölünür, sağ kamera çizilir
             renderer.setViewport(window.innerWidth / 2, 0, window.innerWidth / 2, window.innerHeight);
             renderer.setScissor(window.innerWidth / 2, 0, window.innerWidth / 2, window.innerHeight);
             renderer.setScissorTest(true);
             renderer.render(scene, cameraRight);
         }
 
-        // Ekran boyutları değiştiğinde veya yön döndüğünde uyumluluk sağlama
         function onWindowResize() {
             const width = window.innerWidth;
             const height = window.innerHeight;
-
             renderer.setSize(width, height);
-            
             cameraLeft.aspect = (width / 2) / height;
             cameraLeft.updateProjectionMatrix();
-
             cameraRight.aspect = (width / 2) / height;
             cameraRight.updateProjectionMatrix();
         }
