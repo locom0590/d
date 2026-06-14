@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>3D Kognitif VR Uçuş Egzersizi - Aşama 1</title>
+    <title>3D Kognitif VR Uçuş Egzersizi - Aşama 2</title>
     <style>
         body, html {
             margin: 0;
@@ -14,7 +14,6 @@
             background-color: #a0c4ff;
             font-family: sans-serif;
             user-select: none;
-            /* 1. AŞAMA GÜNCELLEMESİ: Tarayıcının kaydırma/yakınlaştırma gecikmelerini sıfırlar */
             touch-action: none; 
         }
 
@@ -45,8 +44,6 @@
             box-shadow: 0 4px 15px rgba(0,0,0,0.2);
             transition: transform 0.2s;
         }
-
-        .btn:active { transform: scale(0.95); }
 
         .ui-container {
             position: absolute;
@@ -85,7 +82,7 @@
     <div id="start-screen">
         <h2>Kognitif Odaklanma Egzersizi</h2>
         <p style="max-width: 400px; margin-bottom: 30px; line-height: 1.5;">
-            Lütfen telefonu yatay konuma getirin ve "Egzersizi Başlat" butonuna basın.
+            Lütfen telefonu yatay konuma getirin ve "Egzersizi Başlat" butonuna basın. Açılan sensör iznine mutlaka onay verin.
         </p>
         <button class="btn" id="start-btn">Egzersizi Başlat</button>
     </div>
@@ -117,17 +114,20 @@
         let isTargetInside = false;
         let lockOnStartTime = null;
 
-        // Jiroskop Verileri
-        let rawPitch = 0, rawRoll = 0;
-        let basePitch = null, baseRoll = null;
-
-        // Yedek Dokunmatik Verileri
-        let touchStartX = 0, touchStartY = 0;
-        let touchPitch = 0, touchRoll = 0;
+        // 2. AŞAMA MATEMATİKSEL DEĞİŞKENLERİ: Küresel rotasyon matrisleri
+        let targetQuaternion = new THREE.Quaternion();
+        let currentQuaternion = new THREE.Quaternion();
+        
+        // Cihaz oryantasyon açıları
+        let alpha = 0, beta = 0, gamma = 0;
         let isUsingTouch = true; 
 
-        let currentRotation = new THREE.Euler(0, 0, 0, 'YXZ');
-        const SMOOTHING_FACTOR = 0.04; 
+        // Dokunmatik Yedek Açıları
+        let touchStartX = 0, touchStartY = 0;
+        let touchPitch = 0, touchRoll = 0;
+
+        // Yumuşatma Faktörleri (Sıfır atlama için optimize edildi)
+        const INTERPOLATION_FACTOR = 0.1; 
 
         let renderer, scene, cameraLeft, cameraRight;
         let playerContainer, targetAircraft, reticleRing, targetAura;
@@ -147,13 +147,16 @@
 
             setupTouchControls();
 
+            // Tarayıcıdan mutlak izin isteme protokolü zorlaması
             if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
                 DeviceOrientationEvent.requestPermission()
                     .then(permissionState => {
                         if (permissionState === 'granted') {
                             window.addEventListener('deviceorientation', handleOrientation, true);
+                        } else {
+                            alert("Sensör izni verilmedi. İmleç sadece dokunmatik hareket edebilir.");
                         }
-                    }).catch(() => {
+                    }).catch((err) => {
                         window.addEventListener('deviceorientation', handleOrientation, true);
                     });
             } else {
@@ -163,24 +166,14 @@
             startGame();
         });
 
+        // 2. AŞAMA GÜNCELLEMESİ: Ham veriyi bozmadan doğrudan global değişkenlere eşleme
         function handleOrientation(event) {
             if (event.beta === null || event.gamma === null) return;
-            isUsingTouch = false;
+            isUsingTouch = false; // Sensör sinyali alındığı an dokunmatik modu kapatır
 
-            const orientation = window.orientation || window.screen.orientation?.angle || 0;
-
-            if (orientation === 90 || orientation === -90) {
-                rawPitch = (orientation === 90 ? event.gamma : -event.gamma) * (Math.PI / 180);
-                rawRoll = (orientation === 90 ? -event.beta : event.beta) * (Math.PI / 180);
-            } else {
-                rawPitch = -event.beta * (Math.PI / 180);
-                rawRoll = event.gamma * (Math.PI / 180);
-            }
-
-            if (basePitch === null) {
-                basePitch = rawPitch;
-                baseRoll = rawRoll;
-            }
+            alpha = event.alpha;
+            beta = event.beta;
+            gamma = event.gamma;
         }
 
         function setupTouchControls() {
@@ -192,8 +185,8 @@
                 if (!isUsingTouch) return;
                 const deltaX = e.touches[0].clientX - touchStartX;
                 const deltaY = e.touches[0].clientY - touchStartY;
-                touchRoll -= (deltaX * 0.005);
-                touchPitch -= (deltaY * 0.005);
+                touchRoll -= (deltaX * 0.003);
+                touchPitch -= (deltaY * 0.003);
                 touchStartX = e.touches[0].clientX;
                 touchStartY = e.touches[0].clientY;
             });
@@ -228,12 +221,10 @@
             const width = window.innerWidth;
             const height = window.innerHeight;
 
-            // 1. AŞAMA GÜNCELLEMESİ: Cihazın ekran kartını en yüksek performansa zorlama ayarları
             renderer = new THREE.WebGLRenderer({ 
                 canvas: canvas, 
                 antialias: true,
-                powerPreference: "high-performance", 
-                precision: "mediump" 
+                powerPreference: "high-performance"
             });
             renderer.setSize(width, height);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -326,6 +317,27 @@
             lockOnStartTime = null;
         }
 
+        // 2. AŞAMA ANALİZ FONKSİYONU: Ham verilerden hatasız Quaternion matrisi üretir
+        function computeQuaternionFromGyro(a, b, g) {
+            const z = a ? a * (Math.PI / 180) : 0; 
+            const x = b ? b * (Math.PI / 180) : 0; 
+            const y = g ? g * (Math.PI / 180) : 0; 
+
+            const euler = new THREE.Euler();
+            const screenAngle = (window.orientation || window.screen.orientation?.angle || 0) * (Math.PI / 180);
+
+            // Cihazın yatay eksen oryantasyonuna göre havacılık standardında matris eşlemesi
+            euler.set(x, y, -z, 'YXZ'); 
+            
+            const q0 = new THREE.Quaternion();
+            q0.setFromEuler(euler); 
+
+            const q1 = new THREE.Quaternion();
+            q1.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -screenAngle); 
+
+            return q0.multiply(q1);
+        }
+
         function animate() {
             if (!gameActive) return;
             requestAnimationFrame(animate);
@@ -333,17 +345,24 @@
             const delta = Math.min(clock.getDelta(), 0.1);
             simulatedTime += delta; 
 
-            let targetPitch = isUsingTouch ? touchPitch : (rawPitch - (basePitch || 0)) * 0.6;
-            let targetYaw = isUsingTouch ? touchRoll : (rawRoll - (baseRoll || 0)) * 0.7;
+            // 2. AŞAMA GÜNCELLEMESİ: Parça parça açı toplamak yerine tüm bakışı küresel olarak slerp ile eşleme
+            if (isUsingTouch) {
+                const touchEuler = new THREE.Euler(touchPitch, touchRoll, 0, 'YXZ');
+                targetQuaternion.setFromEuler(touchEuler);
+            } else {
+                // Jiroskoptan gelen ham veriyi doğrudan havacılık matrisine yansıtıyoruz
+                targetQuaternion.copy(computeQuaternionFromGyro(alpha, beta, gamma));
+            }
 
-            currentRotation.x += (targetPitch - currentRotation.x) * SMOOTHING_FACTOR;
-            currentRotation.y += (targetYaw - currentRotation.y) * SMOOTHING_FACTOR;
-            
-            playerContainer.quaternion.setFromEuler(currentRotation);
+            // Slerp (Spherical Linear Interpolation) ile atlamasız, pürüzsüz rotasyon takibi
+            currentQuaternion.slerp(targetQuaternion, INTERPOLATION_FACTOR);
+            playerContainer.quaternion.copy(currentQuaternion);
 
+            // İleri uçuş vektör hesabı
             const forwardDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(playerContainer.quaternion);
             playerContainer.position.addScaledVector(forwardDirection, FLIGHT_SPEED * delta);
 
+            // Uçak Yapay Zeka Hareketi
             const ai = targetAircraft.userData;
             const targetForward = new THREE.Vector3(0, 0, -1);
             targetAircraft.position.addScaledVector(targetForward, (FLIGHT_SPEED * 0.88) * delta);
@@ -357,6 +376,7 @@
                 targetAircraft.position.z - 5
             );
 
+            // İmleç/Uçak Hizalama Kontrolü
             const cameraDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(playerContainer.quaternion);
             const toTargetVector = new THREE.Vector3().subVectors(targetAircraft.position, playerContainer.position).normalize();
             const angleDifference = cameraDirection.angleTo(toTargetVector);
@@ -380,6 +400,7 @@
                 if (progress >= 1) { score++; document.querySelectorAll('.score').forEach(el => el.innerText = `Skor: ${score}`); spawnTargetAircraft(); }
             } else { isTargetInside = false; lockOnStartTime = null; targetAura.visible = false; }
 
+            // VR Çift Ekran Render Bölümü
             renderer.setViewport(0, 0, window.innerWidth / 2, window.innerHeight);
             renderer.setScissor(0, 0, window.innerWidth / 2, window.innerHeight);
             renderer.setScissorTest(true);
